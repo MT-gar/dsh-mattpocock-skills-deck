@@ -55,6 +55,7 @@ function settingsText(wsLines) {
 function makeSource() {
   const listeners = []
   const api = {
+    listenerCount() { return listeners.length },
     push(change) {
       api.snapshot = { change: change }
       listeners.slice().forEach(function (cb) { cb() })
@@ -160,6 +161,8 @@ async function main() {
   globalThis.deckSuggestOf = deckMod.deckSuggestOf
   globalThis.isDeckClosed = deckMod.isDeckClosed
   const gateMod = await imp('src/client/statusbar/suggestGate.ts')
+  globalThis.suggestCommitDismiss = gateMod.suggestCommitDismiss
+  globalThis.useSuggestInterruptedDismiss = gateMod.useSuggestInterruptedDismiss
   const visibleOf = function (table) {
     flagTable = table
     return gateMod.suggestBubbleVisibleOf('D:/ws/demo')
@@ -217,6 +220,7 @@ async function main() {
   }
   const appearanceMod = await imp('src/client/statusbar/suggestAppearance.ts')
   global.SUGGEST_Z = appearanceMod.SUGGEST_Z
+  global.SUGGEST_TOOLTIP_Z = appearanceMod.SUGGEST_TOOLTIP_Z
   global.SUGGEST_APPEARANCE = appearanceMod.SUGGEST_APPEARANCE
   global.MOTION = (await imp('src/client/kernel/motion.ts')).MOTION
   global.inject = function () {}
@@ -245,15 +249,20 @@ async function main() {
   const host = win.document.createElement('div')
   win.document.body.appendChild(host)
   const root = ReactDOMClient.createRoot(host)
-  function Host(props) { return React.createElement(streamMod.SuggestStreamMount, { sid: props.sid, cwd: 'D:/ws/demo' }) }
+  function Host(props) { return React.createElement(streamMod.SuggestStreamMount, { sid: props.sid, cwd: 'D:/ws/demo', activeView: props.activeView }) }
   let mountSeq = 0
   // 每次 show 都是一次重新挂载：真机上收起态与展开态是两棵不同的树，deck 状态一变 React 就会卸载再挂载。
+  let activeView = 'chat'
   async function show(sid) {
     mountSeq += 1
     await act(async function () {
-      root.render(React.createElement(Host, { key: 'm' + mountSeq, sid: sid }))
+      root.render(React.createElement(Host, { key: 'm' + mountSeq, sid: sid, activeView: activeView }))
       await tick()
     })
+  }
+  async function setActiveView(view) {
+    activeView = view
+    await act(async function () { root.render(React.createElement(Host, { sid: 'sid-keep', activeView: view })); await tick() })
   }
   async function append(sid, events) {
     await act(async function () { sourceFor(sid).append(events); await tick() })
@@ -274,6 +283,13 @@ async function main() {
   await show('sid-keep')
   await append('sid-keep', [startEvent(1), callEvent('call-keep', 1, ITEMS), endEvent(1)])
   check(layer() !== null && pills().length === 2, 'deck 开着、开关开时建议气泡照常出现（今天的行为没变）。', String(pills().length))
+  const activeSource = sourceFor('sid-keep')
+  check(activeSource.listenerCount() === 1, '初始在 chat 页面时事件流有一个订阅者。', String(activeSource.listenerCount()))
+  await setActiveView('trajectory')
+  check(layer() === null && pills().length === 0, '切到非 chat 页面时隐藏建议气泡。')
+  check(activeSource.listenerCount() === 1 && streamMod.suggestGroupRecall('sid-keep') !== null, '非 chat 页面只隐藏视图，不退订也不清除会话建议缓存。')
+  await setActiveView('chat')
+  check(layer() !== null && pills().length === 2 && activeSource.listenerCount() === 1, '回到 chat 后显示缓存建议，仍只有原订阅。')
 
   // ② 只收起胶囊（deck 工具箱仍开）：不显示，但这组建议不作废，展开后显示最新一组。
   flagTable = { 'D:/ws/demo|deckTools': 'on', 'D:/ws/demo|statusBar': 'hide', 'D:/ws/demo|suggest': 'on' }
@@ -358,14 +374,18 @@ async function main() {
   const deckToolsOff = hostGate.deckSwitchesOf({ workspaces: { 'D:/ws/demo': { statusBar: 'show', deckTools: 'off', suggest: 'on' } } })
   check(deckToolsOff.known === true && deckToolsOff.offKeys.length === 1, '真正关掉 deck 工具箱时闸门照旧认得出（这条判据没有被我改松）。', JSON.stringify(deckToolsOff))
 
-  // ── 第六件事：接线（状态栏把 cwd 交给挂载组件，判据登记进构建） ──
+  // ── 第六件事：接线（StatusDock 负责页面选择，StatusBar 不承载取数挂载） ──
   console.log('')
   console.log('== 第六件事：接线 ==')
   const statusBarSrc = readText('src/client/statusbar/StatusBar.ts')
-  check(statusBarSrc.indexOf('SuggestStreamMount, { sid: sid, cwd: s.cwd }') >= 0, '状态栏两处挂载都把 cwd 交给取数组件（判据要靠它读本工作区的开关）。')
-  const streamSrc = readText('src/client/statusbar/suggestStream.ts')
-  check(streamSrc.indexOf('useSuggestBubbleGate(props, group, setGroup)') >= 0 && streamSrc.indexOf('if (!group || !visible) return null') >= 0, '挂载组件问判据钩子，并在不该显示时不画气泡。')
+  check(!/createElement\(SuggestStreamMount/.test(statusBarSrc), '状态栏本身不再挂取数组件，避免状态栏隐藏时丢失建议缓存。')
   const gateSrc = readText('src/client/statusbar/suggestGate.ts')
+  const assemblySrc = readText('src/client/panelAssembly.ts')
+  check(gateSrc.includes('React.createElement(SuggestStreamMount') && assemblySrc.includes("id: 'dsh-mattpocock-suggestions', order: 30") && assemblySrc.includes("id: 'dsh-mattpocock-skills-deck', order: 40"), '建议与状态栏在输入区分别注册，建议排列在状态栏上方。')
+  check(gateSrc.indexOf('activeView: activeView') >= 0 && gateSrc.indexOf("views.indexOf('chat') >= 0 ? 'chat' : null") >= 0, 'StatusDock 根据共享会话页面状态选择 chat，并在页面列表不可用时安全回退。')
+  const streamSrc = readText('src/client/statusbar/suggestStream.ts')
+  check(streamSrc.indexOf('useSuggestBubbleGate(props, group, setGroup)') >= 0 && /if \(!group \|\| hidden\) return null/.test(streamSrc), '挂载组件仍运行取数与判据，只在 chat 且判据通过时渲染气泡。')
+  check(streamSrc.indexOf('suggestCommitDismiss(sid, group, dismissedGroupRef)') >= 0 && streamSrc.indexOf("key: sid + ':' + String(group.id)") >= 0, '挂载组件把关闭提交交给判据层并按会话、组编号和调用编号稳定换组。')
   check(gateSrc.indexOf('isDeckCapsuleFolded') >= 0 && gateSrc.indexOf('deckSuggestOf') >= 0, '判据真的由「deck 收没收起」和「建议开关」合成。')
   const indexSrc = readText('src/client/index.ts')
   const buildSrc = readText('scripts/build.mts')

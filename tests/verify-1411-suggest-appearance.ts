@@ -72,9 +72,9 @@ async function main() {
 
   // ---------- 1. 外观旋钮：关键值逐个钉死（值一变这条门禁就红） ----------
   {
-    // 只留一条固定值的检查：钉死 === 0 之后，>= 0 与 < 2147483000 永远通过，
-    // 单独留着只是永远绿的守卫，会让人误以为这两条还在守东西（#1665 复核意见）。
-    check(appearanceMod.SUGGEST_Z === 0, '旋钮：层级常量 SUGGEST_Z 与状态栏同层（0，宿主设置面板能盖住，#1665）')
+    // 兼容常量仍保持原值；独立 tooltip 另用高层级，主按钮组留在正常流里。
+    check(appearanceMod.SUGGEST_Z === 0, '旋钮：兼容层级常量 SUGGEST_Z 保持 0')
+    check(appearanceMod.SUGGEST_TOOLTIP_Z === 2147483000, '旋钮：tooltip 使用与宿主提示相同的高层级')
     check(A.gapAboveCapsule === 9, '旋钮：气泡与胶囊的间距 9')
     check(A.maxWidthPx === 720, '旋钮：整组最大宽度 720')
     check(A.pillFontPx === 12.5, '旋钮：选项字号 12.5')
@@ -97,7 +97,6 @@ async function main() {
     check(A.bubbleFallbackCount === 8, '旋钮：量不到宽度时兜底 8 颗')
     check(MOTION.suggestBubbleDelayMaxMs === 560, '动效令牌：出发延迟上限 560 毫秒（#1236 起住 motion.ts）')
     check(MOTION.suggestBubbleTravelMinMs === 500 && MOTION.suggestBubbleTravelMaxMs === 1030, '动效令牌：飞行时长 500~1030 毫秒（出场整体约 2 秒）')
-  check(MOTION.suggestAnchorPollMs === 120, '动效令牌：侧栏收起/展开时锚点轮询间隔 120 毫秒（唯一常驻循环，#1787 现象④）')
     check(A.bubbleFromButtonRatio === 0.8, '旋钮：八成从关闭按钮下方出发')
     check(A.bubbleButtonSpreadPx === 90 && A.bubbleClampPx === 40, '旋钮：按钮两侧各约 90、再钳 40')
     check(A.bubbleStartTopOffset === 14 && A.bubbleStartTopSpread === 116, '旋钮：按钮下方出发点 14~130')
@@ -129,7 +128,7 @@ async function main() {
     check(Object.keys(A).length >= 60, '旋钮：外观参数集中在一个对象里（至少 60 项）')
     const appearanceSrc = fs.readFileSync(path.join(ROOT, 'src/client/statusbar/suggestAppearance.ts'), 'utf8')
     const zDefs = appearanceSrc.split('SUGGEST_Z').length - 1
-    check(zDefs >= 1 && /SUGGEST_Z = 0/.test(appearanceSrc), '旋钮：层级常量只有一个定义，值写在这里')
+    check(zDefs >= 1 && /SUGGEST_Z = 0/.test(appearanceSrc) && /SUGGEST_TOOLTIP_Z = 2147483000/.test(appearanceSrc), '旋钮：兼容层级与 tooltip 高层级都集中写在外观叶子')
   }
 
   // ---------- 1b. 对比度：浮层标签/正文与关闭按钮在合成背景上的实测比值（#1787 现象②与关闭按钮） ----------
@@ -545,7 +544,8 @@ async function main() {
     check(cssText.indexOf('backdrop-filter:blur(') >= 0 && cssText.indexOf('-webkit-backdrop-filter:blur(') >= 0, '守卫：产出的 CSS 里真有磨砂（含 -webkit- 前缀）')
     check(stylesSrc.indexOf('.dsws-sugg-pop-row') >= 0 && stylesSrc.indexOf('SUGGEST_APPEARANCE.popLabelGapPx') >= 0 && stylesSrc.indexOf('SUGGEST_APPEARANCE.popRowGapPx') >= 0, '守卫：浮层四行的列宽与行距取自外观旋钮')
     check(stylesSrc.indexOf('.dsws-sugg-score') < 0 && stylesSrc.indexOf('.dsws-sugg-reason') < 0, '守卫：旧的分数泡与理由同行样式已删')
-    check(bubbleSrc.indexOf('suggestInputOf') >= 0 && bubbleSrc.indexOf('ResizeObserver') >= 0, '守卫：锚点先找胶囊（输入框只做兜底），胶囊尺寸变化时重新量（#1665）')
+    check(bubbleSrc.indexOf('suggestInputOf') < 0 && bubbleSrc.indexOf('suggestAnchorOf') < 0 && bubbleSrc.indexOf('ResizeObserver') < 0, '守卫：主组正常流，不再测量输入框或胶囊锚点')
+    check(bubbleSrc.indexOf('SUGGEST_TOOLTIP_Z') >= 0 && bubbleSrc.indexOf('PortalOverlay') >= 0, '守卫：只有独立 tooltip 使用高层级 PortalOverlay')
     check(bubbleSrc.indexOf('popBodyOf') >= 0, '守卫：浮层内容由单独的函数拼（分数泡 + 理由）')
     check(timelineSrc.indexOf('document.') < 0 && timelineSrc.indexOf('window.') < 0, '守卫：时间线是纯函数（不碰 DOM）')
     check(timelineSrc.indexOf('setTimeout') < 0 && timelineSrc.indexOf('setInterval') < 0, '守卫：时间线不含任何定时器')
@@ -560,7 +560,7 @@ async function main() {
     check(bubbleSrc.indexOf('createSuggestEngine') >= 0 && bubbleSrc.indexOf('playOut') >= 0, '守卫：气泡薄壳通过执行器演退场，不另造一套')
     check(bubbleSrc.indexOf('setTimeout') < 0 && bubbleSrc.indexOf('setInterval') < 0, '守卫：气泡薄壳仍不新增定时器')
     check(bubbleSrc.indexOf('leavingRef') >= 0, '守卫：气泡薄壳只认第一次退场（重复点击不重复注入）')
-    check(bubbleSrc.indexOf('requestAnimationFrame') >= 0 && bubbleSrc.indexOf('suggestAnchorPollMs') >= 0, '守卫：气泡薄壳逐帧轮询锚点（宿主侧栏收起/展开不触发 resize 也能重排；间隔取自 MOTION，#1787）')
+    check(bubbleSrc.indexOf('requestAnimationFrame') < 0 && bubbleSrc.indexOf('suggestAnchorPollMs') < 0, '守卫：正常流主组不逐帧轮询锚点')
     check(bubbleSrc.indexOf('dsws-sugg-pop-shift') >= 0 && bubbleSrc.indexOf('dsws-sugg-pop-shift-y') >= 0 && bubbleSrc.indexOf('suggestPopShiftOf') >= 0, '守卫：浮层靠自己的横向/纵向位移变量夹在视口内（横向不溢出、顶边越界下推；算术在时间线纯函数里，夹取在显示与锚点挪动后各做一次）')
     check(indexSrc.indexOf('leaf:suggestTimeline') >= 0 && indexSrc.indexOf('leaf:suggestEngine') >= 0, '接线：两片新叶子在入口登记了拼接标记')
     check(indexSrc.indexOf('leaf:suggestTimeline') < indexSrc.indexOf('leaf:suggestEngine') && indexSrc.indexOf('leaf:suggestEngine') < indexSrc.indexOf('leaf:suggestBubble'), '接线：拼接次序是时间线 → 执行者 → 气泡薄壳')

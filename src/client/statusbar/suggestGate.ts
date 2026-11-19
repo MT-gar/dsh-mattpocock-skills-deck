@@ -24,6 +24,39 @@ declare function suggestGroupRecall(...args: any[]): any;
 declare function suggestGroupForget(...args: any[]): any;
 declare function suggestClosedRemember(...args: any[]): any;
 declare const React: any;
+declare const DswsCtx: any;
+declare const SuggestStreamMount: any;
+
+/** 动作当刻保存关闭结果，动画被切页打断也不会恢复已选或已关闭的建议。 */
+export const suggestCommitDismiss = function (sid: string, group: any, dismissedRef: any) {
+  if (dismissedRef.current === group) return
+  dismissedRef.current = group
+  if (group && group.callId && typeof suggestClosedRemember === 'function') suggestClosedRemember(sid, String(group.callId))
+  if (typeof suggestGroupRecall === 'function' && typeof suggestGroupForget === 'function' && suggestGroupRecall(sid) === group) suggestGroupForget(sid)
+}
+
+/** 切页中断退场时移除已经作废的组；普通切页保留尚未处理的建议。 */
+export const useSuggestInterruptedDismiss = function (hidden: boolean, group: any, dismissedRef: any, setGroup: any) {
+  React.useEffect(function () {
+    if (hidden && group && dismissedRef.current === group) setGroup(null)
+  }, [hidden, group])
+}
+
+/** 建议单独占输入区的一行，不能放在会裁剪子节点的状态栏胶囊里面。 */
+export const StatusDock = function (props: any) {
+  const cx = React.useContext(DswsCtx)
+  const st = cx.storeSvc.useStore(props.sessionId)
+  // 这个 useStore 由宿主的共享 Conversation store 提供，跟随真正选中的页面更新。
+  const selected = props.useStore(function (state: any) { return state.view })
+  const views = props.useSuggestViews(function (value: any) { return value })
+  const activeView = views.indexOf(selected) >= 0 ? selected : views.indexOf('chat') >= 0 ? 'chat' : null
+  return React.createElement('div', { style: {
+    width: 'calc(100% - 2 * var(--dsh-composer-side-clearance, 0px))',
+    maxWidth: 'var(--dsh-composer-card-max-width, 100%)',
+    marginLeft: 'auto', marginRight: 'auto', boxSizing: 'border-box',
+  } }, React.createElement(SuggestStreamMount, { key: props.sessionId, sid: props.sessionId, cwd: st.cwd, activeView: activeView }))
+}
+
 
 /**
  * 气泡该不该显示：唯一判据 =「deck 没有收起」并且「这个工作区的建议开关是开」。
@@ -71,9 +104,11 @@ export const useSuggestBubbleGate = function (props: any, group: any, setGroup: 
   const cwd = (props && props.cwd) ? String(props.cwd) : ''
   const sid = (props && props.sid) ? String(props.sid) : ''
   const visible = suggestBubbleVisibleOf(cwd)
+  let deckClosed = false
+  try { deckClosed = typeof isDeckClosed === 'function' && isDeckClosed(cwd) === true } catch (eClosed) {}
   React.useEffect(function () {
     if (!suggestSkipOnDeckClosed(cwd, sid)) return
     try { setGroup(null) } catch (e) {}
-  }, [sid, cwd, group])
+  }, [sid, cwd, group, deckClosed])
   return visible
 }

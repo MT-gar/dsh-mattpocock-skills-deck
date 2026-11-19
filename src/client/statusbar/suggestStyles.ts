@@ -37,7 +37,7 @@ export const SUGGEST_STYLE_TEXT: string = [
   // 视口内：--dsws-sugg-pop-shift 横向、--dsws-sugg-pop-shift-y 纵向（组件在显示前与锚点挪动后
   // 各量一次矩形；窄窗口不横向溢出、浮层顶边也不会被推出视口）。不吃鼠标事件所以不闪烁。
   '.dsws-sugg-pop{position:absolute;bottom:calc(100% + ' + SUGGEST_APPEARANCE.popGapPx + 'px);left:50%;transform:translateX(calc(-50% + var(--dsws-sugg-pop-shift,0px))) translateY(calc(3px + var(--dsws-sugg-pop-shift-y,0px)));width:max-content;max-width:min(' + SUGGEST_APPEARANCE.popMaxWidthPx + 'px, calc(100vw - ' + (SUGGEST_APPEARANCE.popViewportMarginPx * 2) + 'px));padding:' + SUGGEST_APPEARANCE.popPadY + 'px ' + SUGGEST_APPEARANCE.popPadX + 'px;border-radius:' + SUGGEST_APPEARANCE.popRadiusPx + 'px;border:1px solid ' + SUGGEST_APPEARANCE.pillBorder + ';background:' + SUGGEST_APPEARANCE.popBg + ';color:' + SUGGEST_APPEARANCE.popText + ';box-shadow:' + SUGGEST_APPEARANCE.pillShadow + ';font-size:' + SUGGEST_APPEARANCE.pillFontPx + 'px;line-height:1.5;text-align:left;white-space:normal;opacity:0;pointer-events:none;transition:opacity ' + MOTION.suggestPopMs + 'ms ease,transform ' + MOTION.suggestPopMs + 'ms ease;z-index:3;display:block}',
-  '.dsws-sugg-pill-wrap.dsws-sugg-show-pop .dsws-sugg-pop{opacity:1;transform:translateX(calc(-50% + var(--dsws-sugg-pop-shift,0px))) translateY(var(--dsws-sugg-pop-shift-y,0px))}',
+  '.dsws-sugg-pop-open{opacity:1;transform:translateX(calc(-50% + var(--dsws-sugg-pop-shift,0px))) translateY(var(--dsws-sugg-pop-shift-y,0px))}',
   // #1834：浮层节点带着 role="tooltip"（读屏的 aria-describedby 依赖它，不能删）。宿主样式表里有一条
   // body [role="tooltip"]{color:...}（深色主题给 tooltip 的浅色文字），特异性 (0,1,1) 压过上面
   // .dsws-sugg-pop 的 (0,1,0)，把浮层自己写的深色文字色顶掉了。这里把颜色单独写成带属性选择器的规则，

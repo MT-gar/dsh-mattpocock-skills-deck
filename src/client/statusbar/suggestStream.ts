@@ -29,9 +29,7 @@
 //   模块真源是 ESM 导出，构建时剥掉行首 export 拼进 apply 闭包；运行时不许跨文件 import，
 //   跨文件的纯函数与内核函数一律用下面的 declare 声明；不许 export default；只写可剥离的 TypeScript。
 
-declare const SUGGEST_TOOL_NAME: any;
 declare function suggestHash(...args: any[]): any;
-declare function suggestClipText(...args: any[]): any;
 declare function suggestItemsOf(...args: any[]): any;
 declare function suggestEventOf(...args: any[]): any;
 declare function isEnabled(...args: any[]): any;
@@ -39,6 +37,8 @@ declare function isEnabled(...args: any[]): any;
 declare const SuggestBubble: any;
 // #1879：气泡该不该显示、关掉 deck 时怎么收尾（真源在相邻叶子 suggestGate.ts）。
 declare function useSuggestBubbleGate(...args: any[]): any;
+declare function suggestCommitDismiss(...args: any[]): any;
+declare function useSuggestInterruptedDismiss(...args: any[]): any;
 
 /** 已认出的调用编号最多记多少条：只是防「对话极长时集合无界」的下限，超了整清一次再记。 */
 const SUGGEST_SEEN_LIMIT = 500
@@ -536,6 +536,7 @@ export const SuggestStreamMount = function (props: any) {
   const visible = useSuggestBubbleGate(props, group, setGroup)
   // 每一组给一个递增编号：同一条内容再来一次也算新组，保证界面能重挂（第二组覆盖第一组）。
   const seqRef = React.useRef(0)
+  const dismissedGroupRef = React.useRef(null as any)
   React.useEffect(function () {
     if (!sid) return undefined
     let alive = true
@@ -575,18 +576,16 @@ export const SuggestStreamMount = function (props: any) {
       try { stream.dispose() } catch (eDispose) {}
     }
   }, [sid])
-  if (!group || !visible) return null
+  const hidden = !visible || (props.activeView !== undefined && props.activeView !== 'chat')
+  useSuggestInterruptedDismiss(hidden, group, dismissedGroupRef, setGroup)
+  if (!group || hidden) return null
   return React.createElement(SuggestBubble, {
+    key: sid + ':' + String(group.id) + ':' + String(group.callId || ''),
     st: st,
     sid: sid,
     group: group,
-    onDismiss: function () {
-      // 用户跳过的组要连缓存一起忘掉：切走再切回时不该自己复活。
-      // #1853：再记一份跨刷新的关闭标记（会话号 + 这次关的调用编号），刷新后补出逻辑才不会把它补出来。
-      // 用渲染作用域里的 group（就是气泡上正显示的这一组），不用 effect 闭包里的旧值。
-      if (group && group.callId) suggestClosedRemember(sid, String(group.callId))
-      suggestGroupForget(sid)
-      setGroup(null)
-    },
+    onCommitDismiss: function () { suggestCommitDismiss(sid, group, dismissedGroupRef) },
+    // 旧组的退场不得清掉动画期间刚收到的新组。
+    onDismiss: function () { setGroup(function (current: any) { return current === group ? null : current }) },
   })
 }

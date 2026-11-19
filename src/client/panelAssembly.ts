@@ -29,6 +29,7 @@ declare const ctx: any;
 declare const h: any;
 declare const slots: any;
 declare const StatusBar: any;
+declare const StatusDock: any;
 declare const RunPanel: any;
 declare const SettingsPage: any;
 declare const DeckSidebarTab: any;
@@ -122,6 +123,34 @@ declare const CONTAINER_ACCENT: any;
     //   它当年负责的提示条与切换弹窗，Dock 那边本来就有。
     __injectOnce('conversation.input.dock', function () {
       return slots.register({ name: 'conversation.input.dock', id: 'dsh-mattpocock-skills-deck', order: 40 }, withCx(StatusBar))
+    })
+    // 宿主注册会话视图槽时，共享页面 store 已经就绪，输入区也已声明。
+    // 建议单独依赖该槽，状态栏可以在不提供页面 store 的宿主上继续挂载。
+    __injectOnce('conversation.view', function () {
+      const sessionEntries = typeof slots.entries === 'function' ? slots.entries('conversation.session') : []
+      const sessionEntry = sessionEntries.find(function (entry: any) { return typeof entry.store?.create === 'function' })
+      if (!sessionEntry) return undefined
+      const codingTools = ctx.get('configForms')?.developerTools?.enabled
+      let viewIds: string[] = []
+      const viewSource = {
+        getSnapshot: function () {
+          const next = slots.entries('conversation.view').map(function (entry: any) { return entry.options.id }).filter(function (id: any) {
+            return typeof id === 'string' && (id !== 'trajectory' || !codingTools || codingTools.getSnapshot())
+          })
+          if (next.length !== viewIds.length || next.some(function (id: string, index: number) { return id !== viewIds[index] })) viewIds = next
+          return viewIds
+        },
+        subscribe: function (listener: any) {
+          const stopViews = slots.subscribe('conversation.view', listener)
+          const stopTools = codingTools ? codingTools.subscribe(listener) : null
+          return function () { stopViews(); if (stopTools) stopTools() }
+        },
+      }
+      const disposeSuggestions = slots.register({
+        name: 'conversation.input.dock', id: 'dsh-mattpocock-suggestions', order: 30, store: sessionEntry.store,
+        inject: function () { return { hooks: { suggestViews: viewSource } } },
+      }, withCx(StatusDock))
+      return disposeSuggestions
     })
     __injectOnce('tool.view.cordis', function () {
       return slots.register({ name: 'tool.view.cordis', key: 'self' }, withCx(RunPanel))

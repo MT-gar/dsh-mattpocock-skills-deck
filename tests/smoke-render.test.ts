@@ -52,7 +52,10 @@ const trFn = (key: string, params?: Record<string, unknown>): string => {
   return s
 }
 const registrations = []
+const conversationStore = { spec: { init: () => ({ view: 'chat' }) }, create: () => null }
 const slots = {
+  entries: (name) => name === 'conversation.session' ? [{ store: conversationStore }] : [{ options: { id: 'chat' } }],
+  subscribe: () => () => {},
   register: (meta, comp) => {
     registrations.push({ meta, comp })
     return () => {}
@@ -95,7 +98,7 @@ check(typeof mod.apply === 'function', 'apply 为函数（render smoke）')
 
 try { mod.apply(ctx) } catch (e) { console.log('  WARN apply threw:', e.message) }
 
-check(registrations.length === 6, `slots.register 捕获 6 个插槽（实际 ${registrations.length}）`)
+check(registrations.length === 7, `slots.register 捕获 7 个插槽注册项（实际 ${registrations.length}）`)
 const slotNames = registrations.map(r => r.meta && r.meta.name).join(', ')
 check(slotNames.includes('conversation.input.dock'), `statusbar 插槽已注册（${slotNames}）`)
 check(slotNames.includes('settings.section'), `settings.section 插槽已注册（${slotNames}）`)
@@ -140,7 +143,7 @@ async function renderAndCheck(Comp: unknown, props: Record<string, unknown> | nu
 // 取出已注册的组件映射
 const byId = Object.fromEntries(registrations.map(r => [r.meta && r.meta.id, r.comp]))
 const byName = Object.fromEntries(registrations.map(r => [r.meta && r.meta.name, r.comp]))
-const StatusBarComp = byName['conversation.input.dock'] || byId['dsh-mattpocock-skills-deck']
+const StatusBarComp = byId['dsh-mattpocock-skills-deck']
 // #646：面板内容体由右侧边栏那两格承载（按槽位名取组件即可，keyed 注册也是这个 name）
 const PanelBodyComp = byName['sidebar.right.pane.tab']
 const PanelTitleComp = byName['sidebar.right.pane.tab.title']
@@ -161,6 +164,8 @@ if (StatusBarComp) {
     sessionId: 'test-sid',
     session: { cwd: 'D:\\test' },
     useSessions: () => null,
+    useStore: (select) => select({ view: 'chat' }),
+    useSuggestViews: (select) => select(['chat']),
     inputActions: null,
   }
   const sbContainer = window.document.createElement('div')

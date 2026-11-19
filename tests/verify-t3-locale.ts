@@ -64,9 +64,10 @@ const check = function (file: string) {
   // v26 移除 sidebar.footer.action 后：shell.overlay / conversation.input.dock / tool.view.cordis / settings.plugins.tab / details = 5；v1.5 T2 新增 settings.section = 6。
   // #298 幂等：6 槽位经 __injectOnce 注入，底层 slots.inject 仅剩 helper 内 1 处（变量式调用，不计入字面量 ' 统计）；此处校验幂等注册数
   // #1254：panelAssembly 转 .ts 后拼进产物要过转译，单引号统一成双引号——数注册数只认引号就够了，两种都认（同本文件 17-19 行键与引用的做法）。
+  // 建议区单独等待 conversation.view 的声明，共七处幂等注册；裸 slots.inject 仍只允许在 helper 中出现。
   const nOnce = (src.match(/__injectOnce\s*\(['"]/g) || []).length
   const nRaw = (src.match(/slots\.inject\(['"]/g) || []).length
-  const expectInject = 6
+  const expectInject = 7
   if (nOnce !== expectInject) problems.push('__injectOnce 注册数异常 ' + nOnce + '（期望 ' + expectInject + '）')
   if (nRaw !== 0) problems.push('slots.inject\' 裸露数异常 ' + nRaw + '（期望 0，#298 后应经 __injectOnce）')
   if (problems.length) { console.log('  FAIL', file, problems.join('；')); failed = true }

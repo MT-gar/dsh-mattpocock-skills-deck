@@ -1,189 +1,47 @@
-// src/client/statusbar/suggestBubble.ts —— 「下一步建议」气泡的渲染与交互薄壳（#1411）
-//
-// 职责：把取数层（#1409 的 suggestStream）交来的 items = {intro, prompt, reason}[] 画成状态胶囊
-// 上方的一组气泡：每颗选项是一颗按钮，按钮上只印简介（#1451 后续：原来印「简介 + 提示词」两段，
-// 用户要求只留简介）；完整提示词不进按钮，点一下才把它交给既有的「填进输入框」口子（kernel 的
-// inject，自带补尾换行、注入提示与光标落末尾），随后关闭按钮立刻消失、每颗胶囊化作小泡向上飘走，
-// 飘完整组收起（#1451 用户拍板）；
-// 点关闭按钮同样整组消失（等于一条都不选），走的是更短的整组淡出。
-//
-// 一行排满：每颗按钮的最大宽度按当前条数均分整组宽度（见下面 pillCapPx），条数越多每颗越窄，
-// 三条、四条都排得进一行；只有窄到每颗连一个字都放不下时，才靠选项行的 flex-wrap 换行。
-//
-// 为什么挂页面浮层而不是就地渲染：状态栏那一层有 overflow 裁剪，就地渲染会把气泡切掉。
-// 挂 body 的做法与胶囊弹菜单同一招（kernel:portal 的 PortalOverlay 直接调用，第二个参数是子节点），
-// 层级用 suggestAppearance 里的具名常量 SUGGEST_Z（与胶囊同层，宿主设置面板能盖住它，#1665）；
-// 悬停理由用框正上方的浮层（.dsws-sugg-pop，样式叶子画、位置固定在框顶边、不跟鼠标走），读屏照旧从按钮的 aria-label 念。
-//
-// 硬约束（票面 #1411）：
-//   - 只读借用：界面绝不碰会话服务里那几个保活接口（#1409 已设守卫，本文件连 sessions 都不提）；
-//   - 不新增常驻定时器：只用一次性 DOM 监听（resize / scroll / keydown），卸载即摘；
-//     唯一例外是 #1787 现象④的侧栏轮询：宿主收起/展开左侧边栏时胶囊尺寸不变、窗口不 resize、
-//     也没有 scroll，没有任何事件可等，只能用 requestAnimationFrame 每 suggestAnchorPollMs 读一次
-//     锚点矩形（只读；位置没变时 setPos 返回同一个对象，不触发渲染），卸载时取消；
-//   - 数据防御：缺字段、空数组、条数越界都不许崩，也不假设 item 形状合法；
-//   - 不新增日志事件：#1409 已有 suggest.bind/call/ready，本票只挂既有交互标识（data-log / data-press）。
-//
-// 契约（与仓库其它叶子文件同一套，见 scripts/build.mts 里的叶子清单）：
-//   模块真源是 ESM 导出，构建时剥掉行首 export 拼进 apply 闭包；运行时不许跨文件 import；
-//   不许 export default；只写可剥离的 TypeScript（不用 enum、不用构造函数参数属性）。
+// 「下一步建议」的按钮组在输入 dock 中参与正常布局，给目标、任务栏留下真实空间。
+// 只有悬停说明使用页面浮层，避免被会话滚动区域裁剪；按钮不再测量输入框或轮询屏幕位置。
+// 本文件由构建拼入客户端闭包；跨叶子调用由 declare 声明，不在运行时重复导入。
+declare const React: any;
 declare const PortalOverlay: any;
 declare function inject(...args: any[]): any;
-declare const SUGGEST_Z: any;
+declare const SUGGEST_TOOLTIP_Z: any;
 declare const SUGGEST_APPEARANCE: any;
-declare const MOTION: any;
 declare function createSuggestEngine(...args: any[]): any;
 declare function suggestPopShiftOf(rect: any, viewWidth: any, viewHeight: any, margin: any): any;
 
-/** 一组建议最多显示多少颗按钮：与工具/取数层同一组上下限，界面这层只防越界，不重复校验内容。 */
 const SUGGEST_VIEW_MAX_ITEMS = 4
 
-/**
- * 清洗 items：只留 prompt 是非空字符串的条目，条数截到上限；reason 不是字符串就当没有理由；
- * priority 不是有效数字就当没打分（null），排序与浮层都不认它。
- * 为什么要再洗一遍：取数层保证的是「工具参数校验过」，但界面侧不假设数据一定合法（票面⑥）。
- */
+/** 过滤缺少提示词的条目；旧事件没有简介或说明时仍然可以使用。 */
 export const suggestViewItemsOf = function (items: any) {
   const out: any[] = []
-  try {
-    if (!Array.isArray(items)) return out
-    for (let i = 0; i < items.length && out.length < SUGGEST_VIEW_MAX_ITEMS; i++) {
-      const item = items[i]
-      if (!item || typeof item !== 'object') continue
-      const prompt = item.prompt
-      if (typeof prompt !== 'string' || !prompt) continue
-      const intro = (typeof item.intro === 'string') ? item.intro : ''
-      const reason = (typeof item.reason === 'string') ? item.reason : ''
-      const gain = (typeof item.gain === 'string') ? item.gain : ''
-      const cost = (typeof item.cost === 'string') ? item.cost : ''
-      const priority = (typeof item.priority === 'number' && Number.isFinite(item.priority)) ? item.priority : null
-      out.push({ intro: intro, prompt: prompt, reason: reason, gain: gain, cost: cost, priority: priority })
-    }
-  } catch (eItems) {}
+  if (!Array.isArray(items)) return out
+  for (const item of items) {
+    if (out.length >= SUGGEST_VIEW_MAX_ITEMS) break
+    if (!item || typeof item !== 'object' || typeof item.prompt !== 'string' || !item.prompt) continue
+    out.push({
+      prompt: item.prompt,
+      intro: typeof item.intro === 'string' ? item.intro : '',
+      reason: typeof item.reason === 'string' ? item.reason : '',
+      gain: typeof item.gain === 'string' ? item.gain : '',
+      cost: typeof item.cost === 'string' ? item.cost : '',
+      priority: typeof item.priority === 'number' && Number.isFinite(item.priority) ? item.priority : null,
+    })
+  }
   return out
 }
 
-/** 找输入框：textarea 或 contenteditable 里量得到宽高、宽度最大的那个（界面上可能还有小的
- *  搜索框与隐藏输入域，输入框是最宽的那个；量不到宽高的一律跳过）。
- *  #1665 起它只是锚点的兜底：胶囊量不到时才用它，平时锚点跟胶囊走。 */
-export const suggestInputOf = function () {
-  try {
-    if (typeof document === 'undefined' || !document.querySelectorAll) return null
-    const nodes = document.querySelectorAll('textarea, [contenteditable="true"]')
-    let widest: any = null
-    let widestPx = 0
-    for (let i = 0; i < nodes.length; i++) {
-      const el = nodes[i] as any
-      if (!el || typeof el.getBoundingClientRect !== 'function') continue
-      if (el.disabled) continue
-      if (typeof el.getAttribute === 'function' && el.getAttribute('aria-hidden') === 'true') continue
-      const rect = el.getBoundingClientRect()
-      const width = Number(rect && rect.width) || 0
-      const height = Number(rect && rect.height) || 0
-      if (!width || !height) continue
-      if (width > widestPx) { widestPx = width; widest = el }
-    }
-    return widest
-  } catch (eInput) { return null }
-}
-
-/** 取探针节点最近的状态栏外框（.dsws-capsule，整条状态栏的容器；里面每一颗才叫胶囊）；
- *  没有就返回 null（老宿主、折叠状态都没有这条状态栏）。
- *  单独抽出来是为了让「锚点量谁」与「位置重算观察谁」共用同一个判定，不用两处各写一遍 closest。 */
-const suggestCapsuleOf = function (probeEl: any) {
-  try {
-    if (!probeEl || typeof probeEl.closest !== 'function') return null
-    return probeEl.closest('.dsws-capsule')
-  } catch (eCapsule) { return null }
-}
-
-/** 位置重算要观察的元素，#1665 现象二：状态栏是被输入框顶上去的，状态栏自身尺寸不变，
- *  只观察状态栏收不到通知。所以：
- *  - 状态栏在：观察状态栏（它自己变宽变高要重算）和最宽的输入框（它长高会把状态栏整体顶起）；
- *  - 折叠状态没有状态栏：锚点退回输入框，观察输入框本身。
- *  返回去重后的数组；一个都量不到时返回空数组，调用方只剩 resize / scroll 两条路。 */
-const suggestResizeTargetsOf = function (probeEl: any) {
-  const targets: any[] = []
-  try {
-    const capsule = suggestCapsuleOf(probeEl)
-    if (capsule) targets.push(capsule)
-    const input = suggestInputOf()
-    if (input && targets.indexOf(input) < 0) targets.push(input)
-  } catch (eTargets) {}
-  return targets
-}
-
-/** 把一个元素的屏幕矩形换成整组落点：横向取中心，纵向取「顶边到视口底边」再加间距。
- *  量不到宽高（隐藏、jsdom 没布局）返回 null，由调用方换下一种锚点。
- *  锚点整个跑到视口上方时也返回 null：折叠状态没有状态栏、粘贴长文会把输入框顶到负值，
- *  照它算出来的气泡会跟着飞出屏幕（#1665 真机复测）。这种时候交给调用方换下一个锚点，
- *  最后退回视口中央靠下的兜底位置，气泡至少留在屏幕里。 */
-function anchorOfRect(rect: any) {
-  const width = Number(rect && rect.width) || 0
-  const height = Number(rect && rect.height) || 0
-  if (!width && !height) return null
-  const top = Number(rect && rect.top) || 0
-  if (top <= 0) return null
-  const viewHeight = (typeof window !== 'undefined' && Number(window.innerHeight)) || 0
-  const gap = Number(SUGGEST_APPEARANCE && SUGGEST_APPEARANCE.gapAboveCapsule) || 0
-  return { left: Math.round((Number(rect.left) || 0) + width / 2), bottom: Math.round(viewHeight - top) + gap }
-}
-
-/**
- * 量气泡锚点：优先跟状态栏外框（探针节点最近的 .dsws-capsule，横向取它的中心）。
- * 为什么跟状态栏不跟输入框：输入框的高度随对话框内容增减，内容一多顶边上移，
- * 按输入框算整组会被顶到内容区顶部（#1665 现象二）。状态栏外框的尺寸不随内容改变，
- * 位置虽然也会被长高的输入框顶起，但它始终贴着输入栏，跟它走最稳。
- * 状态栏量不到（老宿主没有探针、折叠状态没有这条栏）才退回最宽的输入框，
- * 都量不到、或量到的锚点已经跑到视口上方，才用视口中央靠下的一点。
- * 返回 { left, bottom }，单位是 CSS 像素。
- *
- * 这个函数先定下整组选项框的位置，动效再按定好的布局量小泡的起落点（位置 effect 排在动效
- * effect 之前）。状态栏尺寸变化、输入框长高把状态栏整体顶起时，都由 ResizeObserver 重新量
- * （观察谁见 suggestResizeTargetsOf），整组跟着状态栏走。
- */
-export const suggestAnchorOf = function (probeEl: any) {
-  const viewWidth = (typeof window !== 'undefined' && Number(window.innerWidth)) || 0
-  const fallback = { left: Math.round(viewWidth / 2), bottom: 120 }
-  try {
-    const capsule = suggestCapsuleOf(probeEl)
-    const fromCapsule = (capsule && typeof capsule.getBoundingClientRect === 'function') ? anchorOfRect(capsule.getBoundingClientRect()) : null
-    if (fromCapsule) return fromCapsule
-  } catch (eAnchorCapsule) {}
-  try {
-    const input = suggestInputOf()
-    const fromInput = (input && typeof input.getBoundingClientRect === 'function') ? anchorOfRect(input.getBoundingClientRect()) : null
-    if (fromInput) return fromInput
-  } catch (eAnchorInput) {}
-  return fallback
-}
-
-/**
- * 把浮层推回视口内：只写两个 CSS 变量（横向 --dsws-sugg-pop-shift、纵向 --dsws-sugg-pop-shift-y），
- * 位移量由 suggestTimeline 的 suggestPopShiftOf 算（纯函数、可脱 DOM 验），不改浮层别的样式。
- * 先清成 0 再量：上一颗浮层留下的位移不能掺进这次测量。显示前调一次；锚点被窗口或侧栏挪动后，
- * feature 的 measure 回调再对打开着的浮层调一次（#1787 现象③的窄窗口分支）。
- */
+/** 显示前把说明卡片夹回视口；计算仍复用既有的纯函数。 */
 const suggestClampPopToViewport = function (pop: any) {
-  try {
-    if (!pop || !pop.style || typeof pop.style.setProperty !== 'function' || typeof pop.getBoundingClientRect !== 'function') return
-    pop.style.setProperty('--dsws-sugg-pop-shift', '0px')
-    pop.style.setProperty('--dsws-sugg-pop-shift-y', '0px')
-    const rect = pop.getBoundingClientRect()
-    if (!rect) return
-    const margin = Number(SUGGEST_APPEARANCE && SUGGEST_APPEARANCE.popViewportMarginPx) || 0
-    const viewWidth = (typeof window !== 'undefined' && Number(window.innerWidth)) || 0, viewHeight = (typeof window !== 'undefined' && Number(window.innerHeight)) || 0
-    const shift = suggestPopShiftOf(rect, viewWidth, viewHeight, margin)
-    if (shift && shift.x) pop.style.setProperty('--dsws-sugg-pop-shift', shift.x + 'px')
-    if (shift && shift.y) pop.style.setProperty('--dsws-sugg-pop-shift-y', shift.y + 'px')
-  } catch (eClampPop) {}
+  if (!pop || !pop.style || typeof pop.getBoundingClientRect !== 'function') return
+  pop.style.setProperty('--dsws-sugg-pop-shift', '0px')
+  pop.style.setProperty('--dsws-sugg-pop-shift-y', '0px')
+  const shift = suggestPopShiftOf(pop.getBoundingClientRect(), window.innerWidth, window.innerHeight, SUGGEST_APPEARANCE.popViewportMarginPx)
+  if (shift.x) pop.style.setProperty('--dsws-sugg-pop-shift', shift.x + 'px')
+  if (shift.y) pop.style.setProperty('--dsws-sugg-pop-shift-y', shift.y + 'px')
 }
 
-/** 浮层内容：四行固定顺序「推荐分 / 理由 / 优点 / 缺点」，每行左边一个灰色标签、右边正文；
- *  旧事件缺哪一格就跳过哪一行，不补空行。推荐分印数字不画进度条：模型给的是「谁更该先做」的
- *  相对判断，画条会让人以为它是可校准的刻度。 */
+/** 说明按推荐分、理由、优点、缺点显示，旧事件缺少的字段不补空行。 */
 export const popBodyOf = function (item: any, index: number) {
-  const priority = (item && typeof item.priority === 'number' && Number.isFinite(item.priority)) ? item.priority : null
   const rows: any[] = []
   function pushRow(key: string, labelKey: string, text: any) {
     if (typeof text !== 'string' || !text) return
@@ -191,291 +49,135 @@ export const popBodyOf = function (item: any, index: number) {
       React.createElement('span', { className: 'dsws-sugg-pop-label' }, tr(labelKey)),
       React.createElement('span', { className: 'dsws-sugg-pop-value' }, text)))
   }
+  const priority = item && typeof item.priority === 'number' && Number.isFinite(item.priority) ? item.priority : null
   pushRow('score', 'suggest.label.score', priority === null ? '' : String(priority))
-  pushRow('reason', 'suggest.label.reason', item ? item.reason : '')
-  pushRow('gain', 'suggest.label.gain', item ? item.gain : '')
-  pushRow('cost', 'suggest.label.cost', item ? item.cost : '')
+  pushRow('reason', 'suggest.label.reason', item && item.reason)
+  pushRow('gain', 'suggest.label.gain', item && item.gain)
+  pushRow('cost', 'suggest.label.cost', item && item.cost)
   return rows
 }
 
-/**
- * 挂载组件：props = { st, sid, group, onDismiss }。group = { id, items }，id 变更即换一组
- * （第二组覆盖第一组）。S sid 只用于调试定位，本组件不读会话。
- */
+/** 仅说明卡片 portal 到页面；离开按钮、滚动或调整窗口后关闭，不留下游离卡片。 */
+const SuggestTooltip = function (props: any) {
+  const ref = React.useRef(null)
+  const rect = props.anchor.getBoundingClientRect()
+  const layoutEffect = React.useLayoutEffect || React.useEffect
+  layoutEffect(function () {
+    try { suggestClampPopToViewport(ref.current) } catch (eClamp) {}
+    const close = props.onClose
+    window.addEventListener('resize', close)
+    window.addEventListener('scroll', close, true)
+    return function () {
+      window.removeEventListener('resize', close)
+      window.removeEventListener('scroll', close, true)
+    }
+  }, [props.anchor, props.onClose])
+  return PortalOverlay({
+    ref: ref, id: props.id, className: 'dsws-sugg-pop dsws-sugg-pop-open', role: 'tooltip',
+    style: { position: 'fixed', left: rect.left + rect.width / 2, bottom: window.innerHeight - rect.top + SUGGEST_APPEARANCE.popGapPx, zIndex: SUGGEST_TOOLTIP_Z },
+  }, popBodyOf(props.item, props.index))
+}
+
+/** 点选只填入输入框；切页面仅隐藏，显式关闭和点选才作废这组建议。 */
 export const SuggestBubble = function (props: any) {
-  const safeProps = (props && typeof props === 'object') ? props : {}
+  const safeProps = props && typeof props === 'object' ? props : {}
   const group = safeProps.group
-  const st = safeProps.st
-  const onDismiss = (typeof safeProps.onDismiss === 'function') ? safeProps.onDismiss : null
   const items = suggestViewItemsOf(group && group.items)
-  const groupKey = (group && group.id !== undefined && group.id !== null) ? String(group.id) : '0'
-  const probeRef = React.useRef(null)
+  const groupKey = group && group.id !== undefined && group.id !== null ? String(group.id) : '0'
   const layerRef = React.useRef(null)
   const engineRef = React.useRef(null)
-  // 已经进入退场：点选与关闭只认第一次，免得退出途中再点一下重复注入、重复关整组。
   const leavingRef = React.useRef(false)
-  const posState = React.useState(function () {
-    const viewWidth = (typeof window !== 'undefined' && Number(window.innerWidth)) || 0
-    return { left: Math.round(viewWidth / 2), bottom: 120 }
-  })
-  const pos = posState[0]
-  const setPos = posState[1]
+  const committedRef = React.useRef(false)
+  const [popup, setPopup] = React.useState(null as any)
+  const gap = Number(SUGGEST_APPEARANCE.pillGapPx) || 0
+  const maxWidth = Number(SUGGEST_APPEARANCE.maxWidthPx) || 0
+  const singleMax = Number(SUGGEST_APPEARANCE.pillMaxWidthPx) || 0
+  const share = items.length ? Math.floor((maxWidth - gap * (items.length - 1)) / items.length) : singleMax
+  const pillCapPx = Math.min(singleMax, share > 0 ? share : singleMax)
 
-  // 一次一行排满的宽度预算：整组最大宽度减去按钮之间的间隙，再按当前条数均分；每颗不超过单颗
-  // 上限。为什么这么算：三条各取 360 像素时一行要 720 多，只能一颗一行，正好是 #1451 报的
-  // 「三个选项竖着排」；均分后三条各约 236 像素，一条就排得下。四条时每颗约 175 像素，仍在
-  // 可读范围里；真窄到放不下时才换行。
-  const pillGapPx = Number(SUGGEST_APPEARANCE && SUGGEST_APPEARANCE.pillGapPx) || 0
-  const groupMaxWidthPx = Number(SUGGEST_APPEARANCE && SUGGEST_APPEARANCE.maxWidthPx) || 0
-  const singleMaxWidthPx = Number(SUGGEST_APPEARANCE && SUGGEST_APPEARANCE.pillMaxWidthPx) || 0
-  const evenSharePx = items.length ? Math.floor((groupMaxWidthPx - pillGapPx * (items.length - 1)) / items.length) : 0
-  const pillCapPx = (evenSharePx > 0 ? Math.min(singleMaxWidthPx, evenSharePx) : singleMaxWidthPx) || singleMaxWidthPx
-
-  // 位置：先定框位（挂载量一次；视口变化、状态栏尺寸变化、输入框长高把状态栏整体顶起时再量，#1665）。
-  // 本 effect 排在动效 effect 之前。
   React.useEffect(function () {
-    if (!items.length) return undefined
-    function measure() {
-      // 位置没变就返回同一个对象，React 不重渲染：侧栏轮询每 suggestAnchorPollMs 调一次，
-      // 稳态下不能每次都建新对象、触发整组重渲染（#1787 两轴审查）。
-      try {
-        const next = suggestAnchorOf(probeRef.current)
-        setPos(function (prev: any) {
-          return (prev && prev.left === next.left && prev.bottom === next.bottom) ? prev : next
-        })
-      } catch (eMeasure) {}
-      // 锚点挪了以后，已经打开着的浮层可能又贴回视口边：按新矩形再夹一次（不重新显示、不改内容）。
-      try {
-        const layer = layerRef.current
-        const openPop = (layer && typeof layer.querySelector === 'function') ? layer.querySelector('.dsws-sugg-show-pop .dsws-sugg-pop') : null
-        if (openPop) suggestClampPopToViewport(openPop)
-      } catch (eReclamp) {}
-    }
-    measure()
-    let ro: any = null
-    try {
-      const targets = suggestResizeTargetsOf(probeRef.current)
-      if (targets.length && typeof ResizeObserver !== 'undefined') {
-        ro = new ResizeObserver(function () { measure() })
-        if (ro && typeof ro.observe === 'function') {
-          for (let i = 0; i < targets.length; i++) ro.observe(targets[i])
-        }
-      }
-    } catch (eRO) {}
-    if (typeof window !== 'undefined' && window.addEventListener) {
-      window.addEventListener('resize', measure)
-      window.addEventListener('scroll', measure, true)
-    }
-    // #1787 现象④：宿主收起/展开左侧边栏时，胶囊尺寸不变、窗口不 resize、也没有 scroll，
-    // ResizeObserver 一条通知都收不到，气泡就停在旧中心。宿主的侧栏实现不是我们能依赖的契约，
-    // 也不该去认它的 DOM 类名或过渡结束事件；这里用逐帧轮询，每 suggestAnchorPollMs 读一次锚点
-    // 矩形（只读）。位置没变时 measure 里的 setPos 返回同一个对象，不触发渲染，所以稳态成本只是
-    // 一次 getBoundingClientRect；它也是本文件唯一的常驻循环，卸载即取消（文件头的例外说明）。
-    let rafId = 0
-    let lastMeasureAt = -1
-    const pollIntervalMs = Number(MOTION && MOTION.suggestAnchorPollMs) || 120
-    // 时间戳直接用 requestAnimationFrame 传来的那个（与浏览器帧同源），不额外读时钟；
-    // 第一次回调没有可用的上次时间，lastMeasureAt 是 -1，正好量一次。
-    function pollAnchor(now: any) {
-      rafId = 0
-      try {
-        const stamp = (typeof now === 'number' && now > 0) ? now : Date.now()
-        if (lastMeasureAt < 0 || stamp - lastMeasureAt >= pollIntervalMs) {
-          lastMeasureAt = stamp
-          measure()
-        }
-        if (typeof requestAnimationFrame === 'function') rafId = requestAnimationFrame(pollAnchor)
-      } catch (ePoll) { rafId = 0 }
-    }
-    if (typeof requestAnimationFrame === 'function') { try { rafId = requestAnimationFrame(pollAnchor) } catch (eRafStart) { rafId = 0 } }
-    return function () {
-      if (rafId) { try { cancelAnimationFrame(rafId) } catch (eRafEnd) {} rafId = 0 }
-      try { if (ro && typeof ro.disconnect === 'function') ro.disconnect() } catch (eROD) {}
-      if (typeof window !== 'undefined' && window.removeEventListener) {
-        window.removeEventListener('resize', measure)
-        window.removeEventListener('scroll', measure, true)
-      }
-    }
-  }, [groupKey])
-
-  // 动效：整组挂上页面浮层以后建一次执行器（量布局、生成小泡、逐帧抬高透明度）；
-  // 换了组或卸载时把它关掉。jsdom 里量不到布局，run 直接返回 false，整组按最终态显示。
-  React.useEffect(function () {
-    if (!items.length) return undefined
+    leavingRef.current = false
+    committedRef.current = false
+    setPopup(null)
     let engine: any = null
     try {
-      const layerEl = layerRef.current
-      if (layerEl) {
-        engine = createSuggestEngine(layerEl)
-        try { engine.run() } catch (eRun) {}
+      if (items.length && layerRef.current) {
+        engine = createSuggestEngine(layerRef.current)
+        engine.run()
         engineRef.current = engine
       }
-    } catch (eEngine) { engine = null }
+    } catch (eEngine) {}
     return function () {
       if (engineRef.current === engine) engineRef.current = null
-      if (engine) { try { engine.dispose() } catch (eDispose) {} }
+      try { if (engine) engine.dispose() } catch (eDispose) {}
     }
   }, [groupKey])
 
-  /** 关掉整组：一条不选也走这里。 */
-  function dismiss() {
-    if (!onDismiss) return
-    try { onDismiss() } catch (eDismiss) {}
+  function commitDismiss() {
+    if (committedRef.current) return
+    committedRef.current = true
+    if (typeof safeProps.onCommitDismiss === 'function') safeProps.onCommitDismiss()
   }
-  /**
-   * 退场：能演就交给动效执行器，演不了立刻整组消失。
-   * kind 是 'pick'（选中一条：胶囊化作小泡上飘，整体约半秒）或 'fade'（关闭整组：约 170 毫秒淡出）。
-   * 只认第一次调用，重复点击不会重复触发。
-   */
+  function dismiss() {
+    commitDismiss()
+    if (typeof safeProps.onDismiss === 'function') safeProps.onDismiss()
+  }
   function playOut(kind: string) {
     if (leavingRef.current) return
     leavingRef.current = true
+    commitDismiss()
+    setPopup(null)
     let animated = false
-    try {
-      const engine = engineRef.current
-      animated = engine ? engine.playOut(kind, dismiss) : false
-    } catch (ePlay) { animated = false }
+    try { animated = engineRef.current ? engineRef.current.playOut(kind, dismiss) : false } catch (ePlay) {}
     if (!animated) dismiss()
   }
-
-  // 键盘：Esc 关整组（焦点不管在哪都能关）；回车/空格落在按钮上时由下面的 onPillKey 处理。
   React.useEffect(function () {
     if (!items.length) return undefined
-    function onKey(ev: any) {
-      if (!ev || ev.key !== 'Escape') return
-      dismiss()
-    }
+    function onKey(ev: any) { if (ev && ev.key === 'Escape') dismiss() }
     document.addEventListener('keydown', onKey)
     return function () { document.removeEventListener('keydown', onKey) }
   }, [groupKey, items.length])
-
-  /** 选中一条：先交给既有注入口子，再让整组消失（注入失败也消失，界面不卡着）。 */
   function pick(prompt: string) {
-    try { inject(st, prompt) } catch (eInject) {}
+    if (leavingRef.current) return
+    try { inject(safeProps.st, prompt) } catch (eInject) {}
     playOut('pick')
   }
-  /** 键盘回车/空格 = 点这一颗；preventDefault 掉浏览器的默认激活，避免同一次按键触发两次。 */
-  function onPillKey(ev: any, prompt: string) {
-    if (!ev) return
-    if (ev.key === 'Enter' || ev.key === ' ' || ev.key === 'Spacebar' || ev.key === 'Space') {
-      try { ev.preventDefault() } catch (ePrevent) {}
-      try { if (ev.stopPropagation) ev.stopPropagation() } catch (eStop) {}
-      pick(prompt)
-    }
-  }
-  function onPillClick(ev: any, prompt: string) {
-    try { if (ev && ev.stopPropagation) ev.stopPropagation() } catch (eStop) {}
-    pick(prompt)
-  }
-  function onCloseClick(ev: any) {
-    try { if (ev && ev.stopPropagation) ev.stopPropagation() } catch (eStop) {}
-    playOut('fade')
-  }
   function pillNodeOf(item: any, index: number) {
-    const intro = (typeof item.intro === 'string') ? item.intro : ''
-    const prompt = item.prompt
-    const reason = (typeof item.reason === 'string') ? item.reason : ''
-    const gain = (typeof item.gain === 'string') ? item.gain : ''
-    const cost = (typeof item.cost === 'string') ? item.cost : ''
-    // 读屏念「简介 提示词」；理由、优点、缺点由 aria-describedby 指向浮层正文读出，不在按钮名里重复念。
-    const spoken = intro ? intro + ' ' + prompt : prompt
-    // 选项框上只印简介（#1451 后续拍板）：提示词不进按钮，点选时才原样填进输入框；
-    // 没有简介的旧事件退回只印提示词。理由、优点、缺点收进框正上方的浮层（2026-10-31 改成四行），
-    // 进出由外层负责显隐。
-    const label = intro
-      ? React.createElement('span', { key: 'suggest-intro-' + index, className: 'dsws-sugg-intro' }, intro)
-      : prompt
-    const popId = 'suggest-pop-' + groupKey + '-' + index
-    const hasPop = Boolean(reason || gain || cost)
+    const popId = 'suggest-pop-' + String(safeProps.sid || '') + '-' + groupKey + '-' + index
+    const hasPop = Boolean(item.reason || item.gain || item.cost)
     const button = React.createElement('button', {
-      key: 'suggest-pill-' + index,
-      type: 'button',
-      className: 'dsws-sugg-pill',
-      'data-press': 'button',
-      'data-log': 'suggest.pill',
-      style: { maxWidth: pillCapPx + 'px' },
-      'aria-label': spoken,
-      'aria-describedby': hasPop ? popId : undefined,
-      onClick: function (ev: any) { onPillClick(ev, prompt) },
-      onKeyDown: function (ev: any) { onPillKey(ev, prompt) },
-    }, label)
-    // 没有理由也不裸奔：照样包进定位壳（只是里面不放浮层），有理由没理由 DOM 形状一致。
-    // 显示浮层：#1787 现象③的窄窗口分支——先让浮层按原位置显示，再量一次矩形，把超出视口
-    // 边距的部分写进两个位移变量推回来（横向 --dsws-sugg-pop-shift、纵向 --dsws-sugg-pop-shift-y，
-    // 由样式叶子接在 translate 里）。算术在 suggestTimeline.suggestPopShiftOf，这里只搬 DOM。
-    function showPop(ev: any) {
-      const wrap = ev && ev.currentTarget
-      try { if (wrap && wrap.classList) wrap.classList.add('dsws-sugg-show-pop') } catch (eShow) {}
-      try {
-        const pop = (wrap && typeof wrap.querySelector === 'function') ? wrap.querySelector('.dsws-sugg-pop') : null
-        if (pop) suggestClampPopToViewport(pop)
-      } catch (eShowShift) {}
-    }
-    function hidePop(ev: any) {
-      const wrap = ev && ev.currentTarget
-      try { if (wrap && wrap.classList) wrap.classList.remove('dsws-sugg-show-pop') } catch (eHide) {}
-      try {
-        const pop = (wrap && typeof wrap.querySelector === 'function') ? wrap.querySelector('.dsws-sugg-pop') : null
-        if (pop && pop.style && typeof pop.style.setProperty === 'function') {
-          pop.style.setProperty('--dsws-sugg-pop-shift', '0px')
-          pop.style.setProperty('--dsws-sugg-pop-shift-y', '0px')
+      type: 'button', className: 'dsws-sugg-pill', 'data-press': 'button', 'data-log': 'suggest.pill',
+      style: { maxWidth: 'min(100%, ' + pillCapPx + 'px)' },
+      'aria-label': item.intro ? item.intro + ' ' + item.prompt : item.prompt,
+      'aria-describedby': hasPop && popup && popup.index === index ? popId : undefined,
+      onClick: function (ev: any) { ev.stopPropagation(); pick(item.prompt) },
+      onKeyDown: function (ev: any) {
+        if (ev.key === 'Enter' || ev.key === ' ' || ev.key === 'Spacebar' || ev.key === 'Space') {
+          ev.preventDefault(); ev.stopPropagation(); pick(item.prompt)
         }
-      } catch (eHideShift) {}
+      },
+    }, item.intro ? React.createElement('span', { className: 'dsws-sugg-intro' }, item.intro) : item.prompt)
+    function show(ev: any) {
+      if (hasPop && !leavingRef.current) setPopup({ anchor: ev.currentTarget, item: item, index: index, id: popId })
     }
+    function hide() { setPopup(null) }
     return React.createElement('span', {
-      key: 'suggest-wrap-' + index,
-      className: 'dsws-sugg-pill-wrap',
-      onMouseEnter: showPop,
-      onMouseLeave: hidePop,
-      onFocus: showPop,
-      onBlur: hidePop,
-    }, hasPop ? [button, React.createElement('div', {
-      key: 'suggest-pop-' + index,
-      id: popId,
-      className: 'dsws-sugg-pop',
-      role: 'tooltip',
-    }, popBodyOf(item, index))] : button)
+      key: 'suggest-wrap-' + index, className: 'dsws-sugg-pill-wrap',
+      style: { maxWidth: '100%', minWidth: 0 }, onMouseEnter: show, onMouseLeave: hide, onFocus: show, onBlur: hide,
+    }, button)
   }
-
   if (!items.length) return null
-
-  const layerProps = {
-    ref: layerRef,
-    className: 'dsws-sugg-layer',
-    role: 'group',
-    'aria-label': tr('suggest.group'),
-    'data-log': 'suggest.group',
-    style: {
-      position: 'fixed',
-      left: pos.left,
-      bottom: pos.bottom,
-      transform: 'translateX(-50%)',
-      zIndex: SUGGEST_Z,
-      pointerEvents: 'none',
-      maxWidth: 'min(calc(100vw - 32px), ' + SUGGEST_APPEARANCE.maxWidthPx + 'px)',
-      width: 'max-content',
-    },
-  }
-  const nodes: any[] = []
-  for (let i = 0; i < items.length; i++) nodes.push(pillNodeOf(items[i], i))
-  const closeProps = {
-    type: 'button',
-    className: 'dsws-sugg-close dsws-hov',
-    title: tr('suggest.close'),
-    'aria-label': tr('suggest.close'),
-    'data-press': 'button',
-    'data-log': 'suggest.close',
-    onClick: onCloseClick,
-  }
   return React.createElement(React.Fragment, null,
-    React.createElement('span', { ref: probeRef, style: { display: 'none' }, 'aria-hidden': 'true' }),
-    PortalOverlay(layerProps, [
-      React.createElement('div', { className: 'dsws-sugg-row', key: 'suggest-row' }, nodes),
-      React.createElement('div', { className: 'dsws-sugg-xrow', key: 'suggest-close-row' },
-        React.createElement('button', closeProps, '×')),
-      // 读屏播报：有几条建议可读（不参与视觉布局）。
-      React.createElement('div', { className: 'dsws-sugg-sr', key: 'suggest-sr', role: 'status', 'aria-live': 'polite' },
-        tr('suggest.live', { n: items.length })),
-    ])
-  )
+    React.createElement('div', {
+      ref: layerRef, className: 'dsws-sugg-layer', role: 'group', 'aria-label': tr('suggest.group'), 'data-log': 'suggest.group',
+      style: { position: 'relative', width: '100%', maxWidth: SUGGEST_APPEARANCE.maxWidthPx + 'px', boxSizing: 'border-box', margin: '0 auto', paddingBottom: SUGGEST_APPEARANCE.gapAboveCapsule, pointerEvents: 'none' },
+    }, [
+      React.createElement('div', { className: 'dsws-sugg-row', key: 'suggest-row' }, items.map(pillNodeOf)),
+      React.createElement('div', { className: 'dsws-sugg-xrow', key: 'suggest-close-row' }, React.createElement('button', {
+        type: 'button', className: 'dsws-sugg-close dsws-hov', title: tr('suggest.close'), 'aria-label': tr('suggest.close'),
+        'data-press': 'button', 'data-log': 'suggest.close', onClick: function (ev: any) { ev.stopPropagation(); playOut('fade') },
+      }, '×')),
+      React.createElement('div', { className: 'dsws-sugg-sr', key: 'suggest-sr', role: 'status', 'aria-live': 'polite' }, tr('suggest.live', { n: items.length })),
+    ]),
+    popup ? React.createElement(SuggestTooltip, { ...popup, key: popup.id, onClose: function () { setPopup(null) } }) : null)
 }

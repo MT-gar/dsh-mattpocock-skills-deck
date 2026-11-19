@@ -476,6 +476,11 @@ async function main() {
   globalThis.deckSuggestOf = function () { return 'on' }
   globalThis.isDeckClosed = function () { return false }
   const gateMod = await imp('src/client/statusbar/suggestGate.ts')
+  globalThis.suggestClosedRemember = streamMod.suggestClosedRemember
+  globalThis.suggestGroupRecall = streamMod.suggestGroupRecall
+  globalThis.suggestGroupForget = streamMod.suggestGroupForget
+  globalThis.useSuggestInterruptedDismiss = gateMod.useSuggestInterruptedDismiss
+  globalThis.suggestCommitDismiss = gateMod.suggestCommitDismiss
   globalThis.useSuggestBubbleGate = gateMod.useSuggestBubbleGate
   globalThis.suggestBubbleVisibleOf = gateMod.suggestBubbleVisibleOf
 
